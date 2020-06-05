@@ -69,7 +69,7 @@ class Client extends EventEmitter {
         // stop auto-discovery
         if (this._timer) {
             clearInterval(this._timer);
-            this.timer = null;
+            this._timer = null;
         }
 
         this._innerClient.end();
