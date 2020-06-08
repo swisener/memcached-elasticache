@@ -1,9 +1,10 @@
 'use strict';
+import {EventEmitter} from 'events';
+import Memcached, {VersionData} from 'memcached';
+import _ from 'lodash';
+export = MemcachedElasticache;
 
-const EventEmitter = require('events');
-const Promise = require('bluebird');
-const Memcached = require('memcached');
-const _ = require('lodash');
+Promise = require('bluebird');
 
 const GET_CLUSTER_COMMAND_OLD = 'get AmazonElastiCache:cluster';
 const GET_CLUSTER_COMMAND_NEW = 'config get cluster';
@@ -12,7 +13,15 @@ const DEFAULT_AUTO_DISCOVER = true;
 const DEFAULT_AUTO_DISCOVER_INTERVAL = 60000;
 const DEFAULT_AUTO_DISCOVER_OVERRIDES_REMOVE = false;
 
-function getOption(options, name, defaultValue) {
+declare namespace MemcachedElasticache {
+	interface options extends Memcached.options {
+		autoDiscover?: boolean;
+		autoDiscoverInterval?: number;
+		autoDiscoverOverridesRemove?: boolean;
+	}
+}
+
+function getOption(options: MemcachedElasticache.options, name: string, defaultValue: any) {
 	if (_.has(options, name)) {
 		return options[name];
 	} else {
@@ -20,15 +29,20 @@ function getOption(options, name, defaultValue) {
 	}
 }
 
-function deleteOption(options, name) {
+function deleteOption(options: MemcachedElasticache.options, name: string) {
 	if (_.has(options, name)) {
 		delete options[name];
 	}
 }
 
-class Client extends EventEmitter {
+class MemcachedElasticache extends EventEmitter {
+	private _options: MemcachedElasticache.options;
+	private _nodeSet: Set<string>;
+	private _configEndpoint: string;
+	private _timer: NodeJS.Timeout | null;
+	private _innerClient: Memcached;
 
-    constructor(configEndpoint, options) {
+    constructor(configEndpoint: string, options: MemcachedElasticache.options = {}) {
         super();
 
 		// extract outer client options so they aren't passed to inner client
@@ -64,7 +78,90 @@ class Client extends EventEmitter {
         }
     }
 
-    end() {
+	// passthrough method calls from outer object to inner object - except
+	// end(), which we explicitly override
+
+	touch(key: string, lifetime: number, cb: (this: Memcached.CommandData, err: any) => void): void {
+    	this._innerClient.touch(key, lifetime, cb);
+	}
+
+	get(key: string, cb: (this: Memcached.CommandData, err: any, data: any) => void): void {
+    	this._innerClient.get(key, cb);
+	}
+
+	gets(key: string, cb: (this: Memcached.CommandData, err: any, data: {[key: string]: any, cas: string}) => void): void {
+    	this._innerClient.gets(key, cb);
+	}
+
+	getMulti(keys: string[], cb: (this: undefined, err: any, data: {[key: string]: any}) => void): void {
+    	this._innerClient.getMulti(keys, cb);
+	}
+
+	set(key: string, value: any, lifetime: number, cb: (this: Memcached.CommandData, err: any, result: boolean) => void): void {
+    	this._innerClient.set(key, value, lifetime, cb);
+	}
+
+	replace(key: string, value: any, lifetime: number, cb: (this: Memcached.CommandData, err: any, result: boolean) => void): void {
+    	this._innerClient.replace(key, value, lifetime, cb);
+	}
+
+	add(key: string, value: any, lifetime: number, cb: (this: Memcached.CommandData, err: any, result: boolean) => void): void {
+    	this._innerClient.add(key, value, lifetime, cb);
+	}
+
+	cas(key: string, value: any, cas: string, lifetime: number, cb: (this: Memcached.CommandData, err: any, result: boolean) => void): void {
+    	this._innerClient.cas(key, value, cas, lifetime, cb);
+	}
+
+	append(key: string, value: any, cb: (this: Memcached.CommandData, err: any, result: boolean) => void): void {
+    	this._innerClient.append(key, value, cb);
+	}
+
+	prepend(key: string, value: any, cb: (this: Memcached.CommandData, err: any, result: boolean) => void): void {
+    	this._innerClient.prepend(key, value, cb);
+	}
+
+	incr(key: string, amount: number, cb: (this: Memcached.CommandData, err: any, result: boolean|number) => void): void {
+    	this._innerClient.incr(key, amount, cb);
+	}
+
+	decr(key: string, amount: number, cb: (this: Memcached.CommandData, err: any, result: boolean|number) => void): void {
+    	this._innerClient.decr(key, amount, cb);
+	}
+
+	del(key: string, cb: (this: Memcached.CommandData, err: any, result: boolean) => void): void {
+    	this._innerClient.del(key, cb);
+	}
+
+	version(cb: (err: any, version: Memcached.VersionData[]) => void): void {
+    	this._innerClient.version(cb);
+	}
+
+	settings(cb: (err: any, settings: Memcached.StatusData[]) => void): void {
+    	this._innerClient.settings(cb);
+	}
+
+	stats(cb: (err: any, stats: Memcached.StatusData[]) => void): void {
+    	this._innerClient.stats(cb);
+	}
+
+	slabs(cb: (err: any, stats: Memcached.StatusData[]) => void): void {
+    	this._innerClient.stats(cb);
+	}
+
+	items(cb: (err: any, stats: Memcached.StatusData[]) => void): void {
+    	this._innerClient.items(cb);
+	}
+
+	cachedump(server: string, slabid: number, number: number, cb: (err: any, cachedump: Memcached.CacheDumpData|Memcached.CacheDumpData[]) => void): void {
+    	this.cachedump(server, slabid, number, cb);
+	}
+
+	flush(cb: (this: undefined, err: any, results: boolean[]) => void): void {
+    	this.flush(cb);
+	}
+
+	end() {
 
         // stop auto-discovery
         if (this._timer) {
@@ -75,15 +172,13 @@ class Client extends EventEmitter {
         this._innerClient.end();
     }
 
-    _getCluster() {
+    private _getCluster() {
 
         // connect to configuration endpoint
         const configClient = new Memcached(this._configEndpoint, {
 			// attempt to contact server 3 times in 3 seconds before marking it dead
 			timeout: 1000,
 			retries: 2,
-			factor: 1,
-			minTimeout: 0,
 			failures: 0
 		});
 
@@ -98,7 +193,7 @@ class Client extends EventEmitter {
                 }
             });
         })
-        .then((version) => {
+        .then((version: VersionData[]) => {
 
             // select cluster command based on cache engine version
             const major = parseInt(version[0].major);
@@ -110,7 +205,8 @@ class Client extends EventEmitter {
 
             // request nodes from configuration endpoint
             return new Promise((resolve, reject) => {
-                configClient.command(() => {
+                // @ts-ignore
+				configClient.command(() => {
                     return {
                         command: clusterCommand,
                         callback: (err, data) => {
@@ -142,7 +238,7 @@ class Client extends EventEmitter {
         })
     }
 
-    _parseNodes(data) {
+    private _parseNodes(data): string[] {
 		const lines = data.split('\n');
 		const nodes = lines[1].split(' ').map((entry) => {
             const parts = entry.split('|');
@@ -151,44 +247,15 @@ class Client extends EventEmitter {
 
 		// make sure node order is consistent so key hashing is consistent
         return nodes.sort();
-    }
+	}
 
-    _createInnerClient(servers) {
-
+    private _createInnerClient(servers) {
         // (re)create inner client object - do not call end() on previous inner
         // client as this will cancel any in-flight operations
         this._innerClient = new Memcached(servers, this._options);
-
-        // passthrough method calls from outer object to inner object - except
-        // end(), which we explicitly override
-        [
-            'touch',
-            'get',
-            'gets',
-            'getMulti',
-            'set',
-            'replace',
-            'add',
-            'cas',
-            'append',
-            'prepend',
-            'incr',
-            'decr',
-            'del',
-            'version',
-            'flush',
-            'stats',
-            'settings',
-            'slabs',
-            'items',
-            'cachedump'
-        ].forEach((func) => {
-            this[func] = this._innerClient[func].bind(this._innerClient);
-        });
 
         // passthrough emitted events from inner object to outer object
         this._innerClient.emit = this.emit.bind(this);
     }
 }
 
-module.exports = Client;

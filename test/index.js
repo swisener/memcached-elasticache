@@ -73,7 +73,7 @@ function createMemachedClassStub(instances) {
 }
 
 function getMemcachedElastiCache(memachedClassStub) {
-    return proxyquire('../index.js', {'memcached': memachedClassStub});
+    return proxyquire('../dist/index.js', {'memcached': memachedClassStub});
 }
 
 function mockVersionSuccess(stub, version) {
